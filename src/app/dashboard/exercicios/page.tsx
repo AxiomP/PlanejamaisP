@@ -13,6 +13,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { ListaExerciciosOutput } from '@/lib/gemini'
+import { exportListaExerciciosToPDF, exportListaExerciciosToDOCX } from '@/lib/export'
+import { EditContentModal } from '@/components/dashboard/edit-content-modal'
+import { ModeSelector, type GenerationMode } from '@/components/dashboard/mode-selector'
 
 const CREDIT_COST = 3
 
@@ -62,15 +65,21 @@ interface FormData {
   quantidade: number
   dificuldade: string
   incluirRespostas: boolean
+  incluirDicas: boolean
   contexto: string
 }
 
 export default function ListaExerciciosPage() {
-  const { dbUser } = useAuth()
+  const { dbUser, institution } = useAuth()
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<GenerationMode>('personalizado')
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<ListaExerciciosOutput | null>(null)
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [editedContent, setEditedContent] = useState('')
   const [showRespostas, setShowRespostas] = useState(false)
+  const [showDicas, setShowDicas] = useState(false)
   const [formData, setFormData] = useState<FormData>({
     disciplina: '',
     ano: '',
@@ -78,6 +87,7 @@ export default function ListaExerciciosPage() {
     quantidade: 10,
     dificuldade: '',
     incluirRespostas: true,
+    incluirDicas: true,
     contexto: '',
   })
 
@@ -86,13 +96,14 @@ export default function ListaExerciciosPage() {
     setError('')
     setResult(null)
     setShowRespostas(false)
+    setShowDicas(false)
     setLoading(true)
 
     try {
       const response = await fetch('/api/generate/lista-exercicios', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ ...formData, mode }),
       })
 
       const data = await response.json()
@@ -112,6 +123,71 @@ export default function ListaExerciciosPage() {
   const creditsAvailable = dbUser?.credits ?? 0
   // TODO: Remover 'true' e usar verificação real em produção
   const canGenerate = true // creditsAvailable >= CREDIT_COST
+
+  const handleExportPDF = async () => {
+    if (!result) return
+    setExporting(true)
+    try {
+      await exportListaExerciciosToPDF(result)
+    } catch (err) {
+      console.error('Erro ao exportar PDF:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleExportDOCX = async () => {
+    if (!result) return
+    setExporting(true)
+    try {
+      await exportListaExerciciosToDOCX(result)
+    } catch (err) {
+      console.error('Erro ao exportar DOCX:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // Converter resultado para HTML editavel
+  const convertToEditableHTML = (listaResult: ListaExerciciosOutput): string => {
+    let html = `<h2>${listaResult.titulo}</h2>\n`
+    html += `<p><em>${listaResult.instrucoes}</em></p>\n\n`
+
+    listaResult.exercicios.forEach((exercicio) => {
+      html += `<h3>Exercicio ${exercicio.numero}</h3>\n`
+      html += `<p>${exercicio.enunciado}</p>\n`
+
+      if (exercicio.resposta) {
+        html += `<p><strong>Resposta:</strong> ${exercicio.resposta}</p>\n`
+      }
+      if (exercicio.dica) {
+        html += `<p><strong>Dica:</strong> ${exercicio.dica}</p>\n`
+      }
+      html += '\n'
+    })
+
+    if (listaResult.respostas && listaResult.respostas.length > 0) {
+      html += '<h3>Gabarito</h3>\n<ul>\n'
+      listaResult.respostas.forEach((resp) => {
+        html += `<li>${resp}</li>\n`
+      })
+      html += '</ul>\n'
+    }
+
+    return html
+  }
+
+  const handleOpenEdit = () => {
+    if (result) {
+      setEditedContent(convertToEditableHTML(result))
+      setIsEditModalOpen(true)
+    }
+  }
+
+  const handleSaveEdit = (newContent: string) => {
+    setEditedContent(newContent)
+    setIsEditModalOpen(false)
+  }
 
   return (
     <div>
@@ -139,6 +215,13 @@ export default function ListaExerciciosPage() {
                     {error}
                   </div>
                 )}
+
+                <ModeSelector
+                  mode={mode}
+                  onModeChange={setMode}
+                  institutionName={institution?.name}
+                  disabled={loading}
+                />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -242,23 +325,39 @@ export default function ListaExerciciosPage() {
                   />
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="incluirRespostas"
-                    checked={formData.incluirRespostas}
-                    onChange={(e) => setFormData({ ...formData, incluirRespostas: e.target.checked })}
-                    className="h-4 w-4 rounded border-gray-300 text-[#2C3E7D] focus:ring-[#2C3E7D]"
-                  />
-                  <label htmlFor="incluirRespostas" className="text-sm text-gray-700">
-                    Incluir respostas e dicas
-                  </label>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="incluirRespostas"
+                      checked={formData.incluirRespostas}
+                      onChange={(e) => setFormData({ ...formData, incluirRespostas: e.target.checked })}
+                      className="h-4 w-4 rounded border-gray-300 text-[#2C3E7D] focus:ring-[#2C3E7D]"
+                    />
+                    <label htmlFor="incluirRespostas" className="text-sm text-gray-700">
+                      Incluir respostas/gabarito
+                    </label>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="incluirDicas"
+                      checked={formData.incluirDicas}
+                      onChange={(e) => setFormData({ ...formData, incluirDicas: e.target.checked })}
+                      className="h-4 w-4 rounded border-gray-300 text-[#2C3E7D] focus:ring-[#2C3E7D]"
+                    />
+                    <label htmlFor="incluirDicas" className="text-sm text-gray-700">
+                      Incluir dicas para resolução
+                    </label>
+                  </div>
                 </div>
               </CardContent>
 
-              <CardFooter>
+              <CardFooter className="flex flex-col gap-2">
                 <Button
                   type="submit"
+                  className="w-full"
                   isLoading={loading}
                   disabled={
                     loading ||
@@ -271,6 +370,9 @@ export default function ListaExerciciosPage() {
                 >
                   Gerar Lista ({CREDIT_COST} créditos)
                 </Button>
+                <p className="text-xs text-gray-500 text-center">
+                  Esta ferramenta é um suporte ao seu trabalho pedagógico e não substitui sua expertise profissional.
+                </p>
               </CardFooter>
             </form>
           </Card>
@@ -325,15 +427,33 @@ export default function ListaExerciciosPage() {
                   <CardTitle className="text-2xl">{result.titulo}</CardTitle>
                   <CardDescription className="mt-2">{result.instrucoes}</CardDescription>
                 </div>
-                {formData.incluirRespostas && (
+                <div className="flex gap-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setShowRespostas(!showRespostas)}
+                    onClick={handleOpenEdit}
                   >
-                    {showRespostas ? 'Ocultar Respostas' : 'Mostrar Respostas'}
+                    Editar Conteudo
                   </Button>
-                )}
+                  {formData.incluirRespostas && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowRespostas(!showRespostas)}
+                    >
+                      {showRespostas ? 'Ocultar Respostas' : 'Mostrar Respostas'}
+                    </Button>
+                  )}
+                  {formData.incluirDicas && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowDicas(!showDicas)}
+                    >
+                      {showDicas ? 'Ocultar Dicas' : 'Mostrar Dicas'}
+                    </Button>
+                  )}
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -348,14 +468,16 @@ export default function ListaExerciciosPage() {
                       <div className="flex-1">
                         <p className="text-gray-800">{exercicio.enunciado}</p>
 
-                        {/* Resposta e Dica (se visível) */}
-                        {showRespostas && (
+                        {/* Resposta e Dica (separados) */}
+                        {(showRespostas || showDicas) && (
                           <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">
-                            <p className="text-sm">
-                              <span className="font-medium text-green-600">Resposta: </span>
-                              <span className="text-gray-700">{exercicio.resposta}</span>
-                            </p>
-                            {exercicio.dica && (
+                            {showRespostas && formData.incluirRespostas && (
+                              <p className="text-sm">
+                                <span className="font-medium text-green-600">Resposta: </span>
+                                <span className="text-gray-700">{exercicio.resposta}</span>
+                              </p>
+                            )}
+                            {showDicas && formData.incluirDicas && exercicio.dica && (
                               <p className="text-sm">
                                 <span className="font-medium text-blue-600">Dica: </span>
                                 <span className="text-gray-600">{exercicio.dica}</span>
@@ -389,13 +511,34 @@ export default function ListaExerciciosPage() {
               )}
             </CardContent>
             <CardFooter className="border-t border-gray-200 pt-6">
-              <p className="text-sm text-gray-500">
-                Exportação em PDF e DOCX estará disponível em breve
-              </p>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={handleExportPDF}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exportando...' : 'Exportar PDF'}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleExportDOCX}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exportando...' : 'Exportar DOCX'}
+                </Button>
+              </div>
             </CardFooter>
           </Card>
         </div>
       )}
+
+      <EditContentModal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        content={editedContent}
+        onSave={handleSaveEdit}
+        title="Editar Lista de Exercicios"
+      />
     </div>
   )
 }

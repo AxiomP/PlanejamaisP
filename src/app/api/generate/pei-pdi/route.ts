@@ -4,8 +4,8 @@ import { generateContent } from '@/lib/gemini'
 import { parseInstitutionalSettings } from '@/types/institutional-settings'
 import { buildInstitutionalPromptContext } from '@/lib/institutional-context'
 
-const CREDIT_COST = 5
-const TOOL_TYPE = 'plano_aula'
+const CREDIT_COST = 10
+const TOOL_TYPE = 'pei_pdi'
 const SKIP_CREDITS = process.env.SKIP_CREDITS === 'true'
 
 export async function POST(request: Request) {
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       )
     }
 
-    // Verificar se usuário existe na tabela users (não apenas no auth)
+    // Verificar se usuário existe na tabela users
     const { data: dbUser, error: userCheckError } = await supabase
       .from('users')
       .select('id, credits, institution_id')
@@ -28,7 +28,6 @@ export async function POST(request: Request) {
       .single()
 
     if (userCheckError || !dbUser) {
-      console.error('Usuário não encontrado na tabela users:', user.id, userCheckError)
       return NextResponse.json(
         { error: 'Usuário não cadastrado completamente. Faça logout e login novamente.' },
         { status: 400 }
@@ -65,6 +64,69 @@ export async function POST(request: Request) {
 
     const generationId = crypto.randomUUID()
 
+    // Preparar metadata com informações do modo de geração
+    const metadata = {
+      generation_mode: mode,
+      institution_id: mode === 'institucional' ? dbUser.institution_id : null
+    }
+
+    // Validar campos obrigatórios
+    if (!inputData.nomeAluno || inputData.nomeAluno.length < 2) {
+      return NextResponse.json(
+        { error: 'O nome do aluno deve ter pelo menos 2 caracteres' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.idade || inputData.idade < 1 || inputData.idade > 99) {
+      return NextResponse.json(
+        { error: 'A idade deve ser entre 1 e 99 anos' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.anoEscolar) {
+      return NextResponse.json(
+        { error: 'O ano escolar é obrigatório' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.diagnostico || inputData.diagnostico.length < 3) {
+      return NextResponse.json(
+        { error: 'O diagnóstico/condição deve ter pelo menos 3 caracteres' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.tipoPlano || !['pei', 'pdi'].includes(inputData.tipoPlano)) {
+      return NextResponse.json(
+        { error: 'O tipo de plano deve ser PEI ou PDI' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.areasDesenvolvimento || inputData.areasDesenvolvimento.length === 0) {
+      return NextResponse.json(
+        { error: 'Selecione pelo menos uma área de desenvolvimento' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.habilidadesAtuais || inputData.habilidadesAtuais.length < 10) {
+      return NextResponse.json(
+        { error: 'Descreva as habilidades atuais do aluno (mínimo 10 caracteres)' },
+        { status: 400 }
+      )
+    }
+
+    if (!inputData.periodoVigencia) {
+      return NextResponse.json(
+        { error: 'O período de vigência é obrigatório' },
+        { status: 400 }
+      )
+    }
+
     // Verificar créditos do usuário (pular se SKIP_CREDITS=true)
     if (!SKIP_CREDITS) {
       const { data: userData, error: userError } = await supabase
@@ -88,18 +150,17 @@ export async function POST(request: Request) {
       }
     }
 
-    // Preparar metadata com informações do modo de geração
-    const metadata = {
-      generation_mode: mode,
-      institution_id: mode === 'institucional' ? dbUser.institution_id : null
-    }
+    // Definir título do plano
+    const tipoPlanoLabel = inputData.tipoPlano === 'pei'
+      ? 'PEI'
+      : 'PDI'
 
     // Criar registro pendente
     const { error: insertError } = await supabase.from('generations').insert({
       id: generationId,
       user_id: user.id,
       tool_type: TOOL_TYPE,
-      title: `Plano de Aula: ${inputData.tema}`,
+      title: `${tipoPlanoLabel} - ${inputData.nomeAluno}`,
       input_data: inputData,
       status: 'processing',
       credits_used: SKIP_CREDITS ? 0 : CREDIT_COST,
@@ -107,9 +168,8 @@ export async function POST(request: Request) {
     })
 
     if (insertError) {
-      console.error('Erro ao inserir generation:', insertError)
       return NextResponse.json(
-        { error: `Erro ao criar registro: ${insertError.message}` },
+        { error: 'Erro ao criar registro' },
         { status: 500 }
       )
     }
@@ -134,7 +194,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Gerar conteúdo com Gemini
+    // Gerar conteúdo
     const startTime = Date.now()
 
     try {
@@ -158,7 +218,6 @@ export async function POST(request: Request) {
 
     } catch (genError) {
       const errorMessage = genError instanceof Error ? genError.message : 'Erro desconhecido'
-      console.error('Erro na geração Gemini:', genError)
 
       await supabase.from('generations')
         .update({
@@ -168,13 +227,13 @@ export async function POST(request: Request) {
         .eq('id', generationId)
 
       return NextResponse.json(
-        { error: `Erro ao gerar conteúdo: ${errorMessage}` },
+        { error: 'Erro ao gerar conteúdo. Por favor, tente novamente.' },
         { status: 500 }
       )
     }
 
   } catch (error) {
-    console.error('Erro no endpoint plano-aula:', error)
+    console.error('Erro no endpoint pei-pdi:', error)
     return NextResponse.json(
       { error: 'Erro interno do servidor' },
       { status: 500 }

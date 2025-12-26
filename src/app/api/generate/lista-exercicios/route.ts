@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { generateContent } from '@/lib/gemini'
+import { parseInstitutionalSettings } from '@/types/institutional-settings'
+import { buildInstitutionalPromptContext } from '@/lib/institutional-context'
 
 const CREDIT_COST = 3
 const TOOL_TYPE = 'lista_exercicios'
@@ -18,8 +20,55 @@ export async function POST(request: Request) {
       )
     }
 
-    const inputData = await request.json()
+    // Verificar se usuário existe na tabela users
+    const { data: dbUser, error: userCheckError } = await supabase
+      .from('users')
+      .select('id, credits, institution_id')
+      .eq('id', user.id)
+      .single()
+
+    if (userCheckError || !dbUser) {
+      return NextResponse.json(
+        { error: 'Usuário não cadastrado completamente. Faça logout e login novamente.' },
+        { status: 400 }
+      )
+    }
+
+    const requestData = await request.json()
+    const { mode = 'personalizado', ...inputData } = requestData
+
+    // Validar modo institucional
+    if (mode === 'institucional' && !dbUser.institution_id) {
+      return NextResponse.json(
+        { error: 'Modo institucional não disponível. Você não está vinculado a uma instituição.' },
+        { status: 403 }
+      )
+    }
+
+    // Buscar configurações institucionais se modo institucional
+    let institutionalContext: string | null = null
+    if (mode === 'institucional' && dbUser.institution_id) {
+      const { data: institution } = await supabase
+        .from('institutions')
+        .select('settings')
+        .eq('id', dbUser.institution_id)
+        .single()
+
+      if (institution?.settings) {
+        const settings = parseInstitutionalSettings(institution.settings)
+        if (settings) {
+          institutionalContext = buildInstitutionalPromptContext(settings)
+        }
+      }
+    }
+
     const generationId = crypto.randomUUID()
+
+    // Preparar metadata com informações do modo de geração
+    const metadata = {
+      generation_mode: mode,
+      institution_id: mode === 'institucional' ? dbUser.institution_id : null
+    }
 
     // Verificar créditos do usuário (pular se SKIP_CREDITS=true)
     if (!SKIP_CREDITS) {
@@ -52,7 +101,8 @@ export async function POST(request: Request) {
       title: `Lista de Exercícios: ${inputData.tema}`,
       input_data: inputData,
       status: 'processing',
-      credits_used: SKIP_CREDITS ? 0 : CREDIT_COST
+      credits_used: SKIP_CREDITS ? 0 : CREDIT_COST,
+      metadata
     })
 
     if (insertError) {
@@ -86,7 +136,7 @@ export async function POST(request: Request) {
     const startTime = Date.now()
 
     try {
-      const outputData = await generateContent(TOOL_TYPE, inputData)
+      const outputData = await generateContent(TOOL_TYPE, inputData, institutionalContext)
       const processingTime = Date.now() - startTime
 
       // Salvar resultado

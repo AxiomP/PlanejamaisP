@@ -4,11 +4,12 @@ import React, { createContext, useContext, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { User } from '@supabase/supabase-js'
-import type { User as DBUser } from '@/types/database.types'
+import type { User as DBUser, Institution } from '@/types/database.types'
 
 interface AuthContextType {
   user: User | null
   dbUser: DBUser | null
+  institution: Institution | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>
@@ -21,6 +22,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [dbUser, setDbUser] = useState<DBUser | null>(null)
+  const [institution, setInstitution] = useState<Institution | null>(null)
   const [loading, setLoading] = useState(true)
   const router = useRouter()
   const supabase = createClient()
@@ -52,6 +54,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await fetchDbUser(session.user.id)
       } else {
         setDbUser(null)
+        setInstitution(null)
       }
 
       setLoading(false)
@@ -75,9 +78,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Se não encontrou usuário no banco, pode ser que ainda não foi criado
       if (!data) {
         console.warn('User not found in database, may need to complete registration')
+        setDbUser(null)
+        setInstitution(null)
+        return
       }
 
       setDbUser(data)
+
+      // Buscar dados da instituição se o usuário pertence a uma
+      if (data.institution_id) {
+        const { data: institutionData, error: instError } = await supabase
+          .from('institutions')
+          .select('*')
+          .eq('id', data.institution_id)
+          .maybeSingle()
+
+        if (instError) {
+          console.error('Error fetching institution:', instError)
+        } else {
+          setInstitution(institutionData)
+        }
+      } else {
+        setInstitution(null)
+      }
     } catch (error) {
       console.error('Error fetching user data:', error)
     }
@@ -139,6 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut()
     setUser(null)
     setDbUser(null)
+    setInstitution(null)
     router.push('/login')
   }
 
@@ -158,6 +182,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = {
     user,
     dbUser,
+    institution,
     loading,
     signIn,
     signUp,

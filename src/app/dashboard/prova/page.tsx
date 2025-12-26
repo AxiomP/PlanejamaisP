@@ -13,6 +13,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { ProvaOutput } from '@/lib/gemini'
+import { exportProvaToPDF, exportProvaToDOCX } from '@/lib/export'
+import { EditContentModal } from '@/components/dashboard/edit-content-modal'
+import { ModeSelector, type GenerationMode } from '@/components/dashboard/mode-selector'
 
 const CREDIT_COST = 5
 
@@ -70,14 +73,19 @@ interface FormData {
   quantidade: number
   dificuldade: string
   incluirGabarito: boolean
+  contexto: string
 }
 
 export default function ProvaPage() {
-  const { dbUser } = useAuth()
+  const { dbUser, institution } = useAuth()
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<GenerationMode>('personalizado')
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<ProvaOutput | null>(null)
   const [showGabarito, setShowGabarito] = useState(false)
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [editedContent, setEditedContent] = useState('')
   const [formData, setFormData] = useState<FormData>({
     disciplina: '',
     ano: '',
@@ -86,6 +94,7 @@ export default function ProvaPage() {
     quantidade: 10,
     dificuldade: '',
     incluirGabarito: true,
+    contexto: '',
   })
 
   const toggleTipoQuestao = (tipo: string) => {
@@ -108,7 +117,7 @@ export default function ProvaPage() {
       const response = await fetch('/api/generate/prova', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ ...formData, mode }),
       })
 
       const data = await response.json()
@@ -128,6 +137,78 @@ export default function ProvaPage() {
   const creditsAvailable = dbUser?.credits ?? 0
   // TODO: Remover 'true' e usar verificação real em produção
   const canGenerate = true // creditsAvailable >= CREDIT_COST
+
+  const handleExportPDF = async () => {
+    if (!result) return
+    setExporting(true)
+    try {
+      await exportProvaToPDF(result)
+    } catch (err) {
+      console.error('Erro ao exportar PDF:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleExportDOCX = async () => {
+    if (!result) return
+    setExporting(true)
+    try {
+      await exportProvaToDOCX(result)
+    } catch (err) {
+      console.error('Erro ao exportar DOCX:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // Converter resultado para HTML editável
+  const convertToEditableHTML = (provaResult: ProvaOutput): string => {
+    let html = `<h2>${provaResult.titulo}</h2>\n`
+    html += `<p><em>${provaResult.instrucoes}</em></p>\n\n`
+
+    provaResult.questoes.forEach((questao) => {
+      html += `<h3>Questão ${questao.numero} (${questao.tipo.replace('_', ' ')})</h3>\n`
+      html += `<p>${questao.enunciado}</p>\n`
+
+      if (questao.alternativas && questao.alternativas.length > 0) {
+        html += '<ul>\n'
+        questao.alternativas.forEach((alt) => {
+          html += `<li>${alt}</li>\n`
+        })
+        html += '</ul>\n'
+      }
+
+      if (questao.resposta_correta) {
+        html += `<p><strong>Resposta:</strong> ${questao.resposta_correta}</p>\n`
+      }
+      if (questao.justificativa) {
+        html += `<p><strong>Justificativa:</strong> ${questao.justificativa}</p>\n`
+      }
+      html += '\n'
+    })
+
+    if (provaResult.gabarito && provaResult.gabarito.length > 0) {
+      html += '<h3>Gabarito</h3>\n<p>'
+      html += provaResult.gabarito.join(' | ')
+      html += '</p>\n'
+    }
+
+    return html
+  }
+
+  const handleOpenEdit = () => {
+    if (result) {
+      setEditedContent(convertToEditableHTML(result))
+      setIsEditModalOpen(true)
+    }
+  }
+
+  const handleSaveEdit = (newContent: string) => {
+    setEditedContent(newContent)
+    setIsEditModalOpen(false)
+    // O conteúdo editado pode ser usado para exportação customizada
+  }
 
   return (
     <div>
@@ -155,6 +236,13 @@ export default function ProvaPage() {
                     {error}
                   </div>
                 )}
+
+                <ModeSelector
+                  mode={mode}
+                  onModeChange={setMode}
+                  institutionName={institution?.name}
+                  disabled={loading}
+                />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -270,6 +358,22 @@ export default function ProvaPage() {
                   </div>
                 </div>
 
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">
+                    Contexto/Finalidade (opcional)
+                  </label>
+                  <textarea
+                    className="w-full rounded-lg border-2 border-gray-300 px-4 py-2.5 text-base transition-colors focus:border-[#2C3E7D] focus:outline-none focus:ring-2 focus:ring-[#2C3E7D]/30 focus:ring-offset-1 placeholder:text-gray-400"
+                    rows={2}
+                    placeholder="Ex: Avaliação diagnóstica do 1º bimestre, focando em equações do primeiro grau..."
+                    value={formData.contexto}
+                    onChange={(e) => setFormData({ ...formData, contexto: e.target.value })}
+                  />
+                  <p className="mt-1 text-sm text-gray-500">
+                    Especifique o objetivo ou parte do conteúdo que deseja avaliar
+                  </p>
+                </div>
+
                 <div className="flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -284,9 +388,10 @@ export default function ProvaPage() {
                 </div>
               </CardContent>
 
-              <CardFooter>
+              <CardFooter className="flex flex-col gap-2">
                 <Button
                   type="submit"
+                  className="w-full"
                   isLoading={loading}
                   disabled={
                     loading ||
@@ -300,6 +405,9 @@ export default function ProvaPage() {
                 >
                   Gerar Prova ({CREDIT_COST} créditos)
                 </Button>
+                <p className="text-xs text-gray-500 text-center">
+                  Esta ferramenta é um suporte ao seu trabalho pedagógico e não substitui sua expertise profissional.
+                </p>
               </CardFooter>
             </form>
           </Card>
@@ -349,8 +457,19 @@ export default function ProvaPage() {
         <div className="mt-8">
           <Card variant="bordered">
             <CardHeader>
-              <CardTitle className="text-2xl">{result.titulo}</CardTitle>
-              <CardDescription>{result.instrucoes}</CardDescription>
+              <div className="flex justify-between items-start">
+                <div>
+                  <CardTitle className="text-2xl">{result.titulo}</CardTitle>
+                  <CardDescription>{result.instrucoes}</CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenEdit}
+                >
+                  Editar Conteúdo
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
               {/* Questões */}
@@ -435,9 +554,22 @@ export default function ProvaPage() {
               )}
             </CardContent>
             <CardFooter className="border-t border-gray-200 pt-6">
-              <p className="text-sm text-gray-500">
-                Exportação em PDF e DOCX estará disponível em breve
-              </p>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={handleExportPDF}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exportando...' : 'Exportar PDF'}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleExportDOCX}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exportando...' : 'Exportar DOCX'}
+                </Button>
+              </div>
             </CardFooter>
           </Card>
         </div>

@@ -13,6 +13,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { PlanoAulaOutput } from '@/lib/gemini'
+import { exportPlanoAulaToPDF, exportPlanoAulaToDOCX } from '@/lib/export'
+import { EditContentModal } from '@/components/dashboard/edit-content-modal'
+import { ModeSelector, type GenerationMode } from '@/components/dashboard/mode-selector'
 
 const CREDIT_COST = 5
 
@@ -65,10 +68,14 @@ interface FormData {
 }
 
 export default function PlanoAulaPage() {
-  const { dbUser } = useAuth()
+  const { dbUser, institution } = useAuth()
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<PlanoAulaOutput | null>(null)
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [editedContent, setEditedContent] = useState('')
+  const [mode, setMode] = useState<GenerationMode>('personalizado')
   const [formData, setFormData] = useState<FormData>({
     disciplina: '',
     ano: '',
@@ -88,7 +95,7 @@ export default function PlanoAulaPage() {
       const response = await fetch('/api/generate/plano-aula', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ ...formData, mode }),
       })
 
       const data = await response.json()
@@ -108,6 +115,85 @@ export default function PlanoAulaPage() {
   const creditsAvailable = dbUser?.credits ?? 0
   // TODO: Remover 'true' e usar verificação real em produção
   const canGenerate = true // creditsAvailable >= CREDIT_COST
+
+  const handleExportPDF = async () => {
+    if (!result) return
+    setExporting(true)
+    try {
+      await exportPlanoAulaToPDF(result)
+    } catch (err) {
+      console.error('Erro ao exportar PDF:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleExportDOCX = async () => {
+    if (!result) return
+    setExporting(true)
+    try {
+      await exportPlanoAulaToDOCX(result)
+    } catch (err) {
+      console.error('Erro ao exportar DOCX:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const convertToEditableHTML = (plano: PlanoAulaOutput): string => {
+    let html = `<h1>${plano.titulo}</h1>`
+    html += `<p><strong>Duração:</strong> ${plano.duracao}</p>`
+
+    html += `<h2>Objetivos de Aprendizagem</h2><ul>`
+    plano.objetivos.forEach(obj => {
+      html += `<li>${obj}</li>`
+    })
+    html += `</ul>`
+
+    html += `<h2>Competências BNCC</h2><ul>`
+    plano.competencias_bncc.forEach(comp => {
+      html += `<li>${comp}</li>`
+    })
+    html += `</ul>`
+
+    html += `<h2>Metodologia</h2>`
+    html += `<p>${plano.metodologia}</p>`
+
+    html += `<h2>Desenvolvimento da Aula</h2>`
+    plano.desenvolvimento.forEach(etapa => {
+      html += `<h3>${etapa.etapa} (${etapa.duracao})</h3>`
+      html += `<p>${etapa.descricao}</p>`
+    })
+
+    html += `<h2>Recursos</h2><ul>`
+    plano.recursos.forEach(rec => {
+      html += `<li>${rec}</li>`
+    })
+    html += `</ul>`
+
+    html += `<h2>Avaliação</h2>`
+    html += `<p>${plano.avaliacao}</p>`
+
+    html += `<h2>Referências</h2><ul>`
+    plano.referencias.forEach(ref => {
+      html += `<li>${ref}</li>`
+    })
+    html += `</ul>`
+
+    return html
+  }
+
+  const handleOpenEdit = () => {
+    if (result) {
+      setEditedContent(convertToEditableHTML(result))
+      setIsEditModalOpen(true)
+    }
+  }
+
+  const handleSaveEdit = (newContent: string) => {
+    setEditedContent(newContent)
+    setIsEditModalOpen(false)
+  }
 
   return (
     <div>
@@ -135,6 +221,13 @@ export default function PlanoAulaPage() {
                     {error}
                   </div>
                 )}
+
+                <ModeSelector
+                  mode={mode}
+                  onModeChange={setMode}
+                  institutionName={institution?.name}
+                  disabled={loading}
+                />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -231,14 +324,18 @@ export default function PlanoAulaPage() {
                 />
               </CardContent>
 
-              <CardFooter>
+              <CardFooter className="flex flex-col gap-2">
                 <Button
                   type="submit"
+                  className="w-full"
                   isLoading={loading}
                   disabled={loading || !canGenerate || !formData.disciplina || !formData.ano || !formData.tema || !formData.duracao}
                 >
                   Gerar Plano de Aula ({CREDIT_COST} créditos)
                 </Button>
+                <p className="text-xs text-gray-500 text-center">
+                  Esta ferramenta é um suporte ao seu trabalho pedagógico e não substitui sua expertise profissional.
+                </p>
               </CardFooter>
             </form>
           </Card>
@@ -288,7 +385,16 @@ export default function PlanoAulaPage() {
         <div className="mt-8">
           <Card variant="bordered">
             <CardHeader>
-              <CardTitle className="text-2xl">{result.titulo}</CardTitle>
+              <div className="flex justify-between items-start">
+                <CardTitle className="text-2xl">{result.titulo}</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenEdit}
+                >
+                  Editar Conteúdo
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
               {/* Objetivos */}
@@ -373,13 +479,34 @@ export default function PlanoAulaPage() {
               </section>
             </CardContent>
             <CardFooter className="border-t border-gray-200 pt-6">
-              <p className="text-sm text-gray-500">
-                Exportação em PDF e DOCX estará disponível em breve
-              </p>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={handleExportPDF}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exportando...' : 'Exportar PDF'}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleExportDOCX}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exportando...' : 'Exportar DOCX'}
+                </Button>
+              </div>
             </CardFooter>
           </Card>
         </div>
       )}
+
+      <EditContentModal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        content={editedContent}
+        onSave={handleSaveEdit}
+        title="Editar Plano de Aula"
+      />
     </div>
   )
 }
