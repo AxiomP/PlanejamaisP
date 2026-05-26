@@ -15,6 +15,7 @@ import {
 import type { ListaExerciciosOutput } from '@/lib/gemini'
 import { exportListaExerciciosToPDF, exportListaExerciciosToDOCX } from '@/lib/export'
 import { EditContentModal } from '@/components/dashboard/edit-content-modal'
+import { ImportTemplateModal } from '@/components/dashboard/import-template-modal'
 import { ModeSelector, type GenerationMode } from '@/components/dashboard/mode-selector'
 
 const CREDIT_COST = 3
@@ -78,6 +79,9 @@ export default function ListaExerciciosPage() {
   const [result, setResult] = useState<ListaExerciciosOutput | null>(null)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [editedContent, setEditedContent] = useState('')
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  const [templateText, setTemplateText] = useState('')
+  const [templateFileName, setTemplateFileName] = useState('')
   const [showRespostas, setShowRespostas] = useState(false)
   const [showDicas, setShowDicas] = useState(false)
   const [formData, setFormData] = useState<FormData>({
@@ -103,7 +107,7 @@ export default function ListaExerciciosPage() {
       const response = await fetch('/api/generate/lista-exercicios', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, mode }),
+        body: JSON.stringify({ ...formData, mode, templateDocument: templateText || undefined }),
       })
 
       const data = await response.json()
@@ -191,11 +195,27 @@ export default function ListaExerciciosPage() {
 
   return (
     <div>
-      <div className="mb-8">
-        <h2 className="text-3xl font-bold text-[#2C3E7D]">Lista de Exercícios</h2>
-        <p className="mt-2 text-gray-600">
-          Crie listas de exercícios variadas para prática e fixação de conteúdo.
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-3xl font-bold text-[#2C3E7D]">Lista de Exercícios</h2>
+          <p className="mt-2 text-gray-600">
+            Crie listas de exercícios variadas para prática e fixação de conteúdo.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setIsImportModalOpen(true)}
+          className={`flex shrink-0 items-center gap-2 rounded-lg border-2 px-4 py-2 text-sm font-medium transition-colors ${
+            templateFileName
+              ? 'border-[#2C3E7D] bg-[#2C3E7D]/10 text-[#2C3E7D]'
+              : 'border-gray-300 bg-white text-gray-600 hover:border-[#2C3E7D] hover:text-[#2C3E7D]'
+          }`}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          {templateFileName ? `Modelo: ${templateFileName.slice(0, 20)}…` : 'Importar Modelo'}
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -537,7 +557,16 @@ export default function ListaExerciciosPage() {
         onClose={() => setIsEditModalOpen(false)}
         content={editedContent}
         onSave={handleSaveEdit}
-        title="Editar Lista de Exercicios"
+        title="Editar Lista de Exercícios"
+      />
+
+      <ImportTemplateModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImport={(text, name) => {
+          setTemplateText(text)
+          setTemplateFileName(name)
+        }}
       />
     </div>
   )

@@ -2,7 +2,8 @@ import Groq from 'groq-sdk'
 import { injectInstitutionalContext } from './institutional-context'
 
 function getGroqClient() {
-  const apiKey = process.env.GROQ_API_KEY
+  // Aceita tanto GROQ_API_KEY quanto GEMINI_API_KEY (alias legado)
+  const apiKey = process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY
   if (!apiKey) {
     throw new Error('GROQ_API_KEY não está configurada nas variáveis de ambiente. Acesse https://console.groq.com para obter uma chave gratuita.')
   }
@@ -18,6 +19,7 @@ interface PlanoAulaInput {
   duracao: string
   objetivos?: string
   codigoBncc?: string
+  templateDocument?: string
 }
 
 interface ProvaInput {
@@ -29,6 +31,7 @@ interface ProvaInput {
   dificuldade: string
   incluirGabarito: boolean
   contexto?: string
+  templateDocument?: string
 }
 
 interface ListaExerciciosInput {
@@ -40,6 +43,7 @@ interface ListaExerciciosInput {
   incluirRespostas: boolean
   incluirDicas: boolean
   contexto?: string
+  templateDocument?: string
 }
 
 interface ReescritorInput {
@@ -137,6 +141,7 @@ TEMA/CONTEÚDO: ${data.tema}
 DURAÇÃO: ${data.duracao}
 ${data.objetivos ? `OBJETIVOS ESPECÍFICOS DO PROFESSOR: ${data.objetivos}` : ''}
 ${data.codigoBncc ? `CÓDIGO BNCC DE REFERÊNCIA: ${data.codigoBncc}` : ''}
+${data.templateDocument ? `\nMODELO DE ESTRUTURA IMPORTADO PELO PROFESSOR:\n---\n${data.templateDocument.slice(0, 2000)}\n---\nAdapte a estrutura e formatação do conteúdo gerado para seguir o modelo acima.\n` : ''}
 
 Responda EXATAMENTE neste formato JSON:
 {
@@ -181,6 +186,7 @@ QUANTIDADE DE QUESTÕES: ${data.quantidade}
 NÍVEL DE DIFICULDADE: ${data.dificuldade}
 INCLUIR GABARITO: ${data.incluirGabarito ? 'Sim' : 'Não'}
 ${data.contexto ? `CONTEXTO/FINALIDADE: ${data.contexto}` : ''}
+${data.templateDocument ? `\nMODELO DE ESTRUTURA IMPORTADO PELO PROFESSOR:\n---\n${data.templateDocument.slice(0, 2000)}\n---\nAdapte a estrutura e formatação da prova gerada para seguir o modelo acima.\n` : ''}
 
 Responda EXATAMENTE neste formato JSON:
 {
@@ -228,6 +234,7 @@ NÍVEL DE DIFICULDADE: ${data.dificuldade}
 INCLUIR RESPOSTAS: ${data.incluirRespostas ? 'Sim' : 'Não'}
 INCLUIR DICAS: ${data.incluirDicas ? 'Sim' : 'Não'}
 ${data.contexto ? `CONTEXTO/FINALIDADE: ${data.contexto}` : ''}
+${data.templateDocument ? `\nMODELO DE ESTRUTURA IMPORTADO PELO PROFESSOR:\n---\n${data.templateDocument.slice(0, 2000)}\n---\nAdapte a estrutura e formatação da lista gerada para seguir o modelo acima.\n` : ''}
 
 Responda EXATAMENTE neste formato JSON:
 {

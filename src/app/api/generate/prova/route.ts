@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { generateContent } from '@/lib/gemini'
 import { parseInstitutionalSettings } from '@/types/institutional-settings'
 import { buildInstitutionalPromptContext } from '@/lib/institutional-context'
@@ -14,14 +15,12 @@ export async function POST(request: Request) {
     const { data: { user } } = await supabase.auth.getUser()
 
     if (!user) {
-      return NextResponse.json(
-        { error: 'Não autorizado' },
-        { status: 401 }
-      )
+      return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
     }
 
-    // Verificar se usuário existe na tabela users (não apenas no auth)
-    const { data: dbUser, error: userCheckError } = await supabase
+    const db = createAdminClient()
+
+    const { data: dbUser, error: userCheckError } = await db
       .from('users')
       .select('id, credits, institution_id')
       .eq('id', user.id)
@@ -37,7 +36,6 @@ export async function POST(request: Request) {
     const requestData = await request.json()
     const { mode = 'personalizado', ...inputData } = requestData
 
-    // Validar modo institucional
     if (mode === 'institucional' && !dbUser.institution_id) {
       return NextResponse.json(
         { error: 'Modo institucional não disponível. Você não está vinculado a uma instituição.' },
@@ -45,10 +43,9 @@ export async function POST(request: Request) {
       )
     }
 
-    // Buscar configurações institucionais se modo institucional
     let institutionalContext: string | null = null
     if (mode === 'institucional' && dbUser.institution_id) {
-      const { data: institution } = await supabase
+      const { data: institution } = await db
         .from('institutions')
         .select('settings')
         .eq('id', dbUser.institution_id)
@@ -56,45 +53,33 @@ export async function POST(request: Request) {
 
       if (institution?.settings) {
         const settings = parseInstitutionalSettings(institution.settings)
-        if (settings) {
-          institutionalContext = buildInstitutionalPromptContext(settings)
-        }
+        if (settings) institutionalContext = buildInstitutionalPromptContext(settings)
       }
     }
 
     const generationId = crypto.randomUUID()
-
-    // Preparar metadata com informações do modo de geração
     const metadata = {
       generation_mode: mode,
       institution_id: mode === 'institucional' ? dbUser.institution_id : null
     }
 
-    // Verificar créditos do usuário (pular se SKIP_CREDITS=true)
     if (!SKIP_CREDITS) {
-      const { data: userData, error: userError } = await supabase
+      const { data: userData, error: userError } = await db
         .from('users')
         .select('credits')
         .eq('id', user.id)
         .single()
 
       if (userError || !userData) {
-        return NextResponse.json(
-          { error: 'Erro ao verificar créditos' },
-          { status: 500 }
-        )
+        return NextResponse.json({ error: 'Erro ao verificar créditos' }, { status: 500 })
       }
 
       if (userData.credits < CREDIT_COST) {
-        return NextResponse.json(
-          { error: 'Créditos insuficientes' },
-          { status: 402 }
-        )
+        return NextResponse.json({ error: 'Créditos insuficientes' }, { status: 402 })
       }
     }
 
-    // Criar registro pendente
-    const { error: insertError } = await supabase.from('generations').insert({
+    const { error: insertError } = await db.from('generations').insert({
       id: generationId,
       user_id: user.id,
       tool_type: TOOL_TYPE,
@@ -106,62 +91,42 @@ export async function POST(request: Request) {
     })
 
     if (insertError) {
-      return NextResponse.json(
-        { error: 'Erro ao criar registro' },
-        { status: 500 }
-      )
+      console.error('Erro ao inserir generation:', insertError)
+      return NextResponse.json({ error: 'Erro ao criar registro' }, { status: 500 })
     }
 
-    // Consumir créditos ANTES de gerar (pular se SKIP_CREDITS=true)
     if (!SKIP_CREDITS) {
-      const { data: creditSuccess, error: creditError } = await supabase.rpc('consume_credits', {
+      const { data: creditSuccess, error: creditError } = await db.rpc('consume_credits', {
         p_user_id: user.id,
         p_generation_id: generationId,
         p_amount: CREDIT_COST
       })
 
       if (creditError || !creditSuccess) {
-        await supabase.from('generations')
+        await db.from('generations')
           .update({ status: 'failed', error_message: 'Erro ao consumir créditos' })
           .eq('id', generationId)
 
-        return NextResponse.json(
-          { error: 'Erro ao consumir créditos' },
-          { status: 402 }
-        )
+        return NextResponse.json({ error: 'Erro ao consumir créditos' }, { status: 402 })
       }
     }
 
-    // Gerar conteúdo com Gemini
     const startTime = Date.now()
 
     try {
       const outputData = await generateContent(TOOL_TYPE, inputData, institutionalContext)
       const processingTime = Date.now() - startTime
 
-      // Salvar resultado
-      await supabase.from('generations')
-        .update({
-          output_data: outputData,
-          status: 'completed',
-          processing_time_ms: processingTime
-        })
+      await db.from('generations')
+        .update({ output_data: outputData, status: 'completed', processing_time_ms: processingTime })
         .eq('id', generationId)
 
-      return NextResponse.json({
-        success: true,
-        generationId,
-        output: outputData
-      })
+      return NextResponse.json({ success: true, generationId, output: outputData })
 
     } catch (genError) {
       const errorMessage = genError instanceof Error ? genError.message : 'Erro desconhecido'
-
-      await supabase.from('generations')
-        .update({
-          status: 'failed',
-          error_message: errorMessage
-        })
+      await db.from('generations')
+        .update({ status: 'failed', error_message: errorMessage })
         .eq('id', generationId)
 
       return NextResponse.json(
@@ -172,9 +137,6 @@ export async function POST(request: Request) {
 
   } catch (error) {
     console.error('Erro no endpoint prova:', error)
-    return NextResponse.json(
-      { error: 'Erro interno do servidor' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Erro interno do servidor' }, { status: 500 })
   }
 }

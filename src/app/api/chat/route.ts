@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import Groq from 'groq-sdk'
 
 const CREDIT_COST = 1
 const SKIP_CREDITS = process.env.SKIP_CREDITS === 'true'
 
 function getGroqClient() {
-  const apiKey = process.env.GROQ_API_KEY
+  const apiKey = process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY
   if (!apiKey) {
     throw new Error('GROQ_API_KEY não está configurada nas variáveis de ambiente')
   }
@@ -47,12 +48,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
     }
 
+    const db = createAdminClient()
     const { searchParams } = new URL(request.url)
     const action = searchParams.get('action')
 
     if (action === 'list') {
-      // Listar conversas do usuário
-      const { data: conversations, error } = await supabase
+      const { data: conversations, error } = await db
         .from('chatbot_conversations')
         .select('id, title, message_count, last_message_at')
         .eq('user_id', user.id)
@@ -81,8 +82,7 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: 'conversationId é obrigatório' }, { status: 400 })
       }
 
-      // Verificar se a conversa pertence ao usuário
-      const { data: conversation, error: convError } = await supabase
+      const { data: conversation, error: convError } = await db
         .from('chatbot_conversations')
         .select('id')
         .eq('id', conversationId)
@@ -93,8 +93,7 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: 'Conversa não encontrada' }, { status: 404 })
       }
 
-      // Buscar mensagens
-      const { data: messages, error: msgError } = await supabase
+      const { data: messages, error: msgError } = await db
         .from('chatbot_messages')
         .select('id, role, content, created_at')
         .eq('conversation_id', conversationId)
@@ -125,8 +124,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
     }
 
-    // Verificar se usuário existe na tabela users
-    const { data: dbUser, error: userCheckError } = await supabase
+    const db = createAdminClient()
+
+    const { data: dbUser, error: userCheckError } = await db
       .from('users')
       .select('id, credits')
       .eq('id', user.id)
@@ -146,24 +146,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Mensagem é obrigatória' }, { status: 400 })
     }
 
-    // Verificar créditos
     if (!SKIP_CREDITS && dbUser.credits < CREDIT_COST) {
       return NextResponse.json({ error: 'Créditos insuficientes' }, { status: 402 })
     }
 
     let conversationId = existingConversationId
 
-    // Criar nova conversa se necessário
     if (!conversationId) {
       const title = message.length > 50 ? message.substring(0, 50) + '...' : message
 
-      const { data: newConv, error: convError } = await supabase
+      const { data: newConv, error: convError } = await db
         .from('chatbot_conversations')
-        .insert({
-          user_id: user.id,
-          title,
-          message_count: 0
-        })
+        .insert({ user_id: user.id, title, message_count: 0 })
         .select('id')
         .single()
 
@@ -174,8 +168,7 @@ export async function POST(request: Request) {
 
       conversationId = newConv.id
     } else {
-      // Verificar se a conversa pertence ao usuário
-      const { data: existingConv, error: checkError } = await supabase
+      const { data: existingConv, error: checkError } = await db
         .from('chatbot_conversations')
         .select('id')
         .eq('id', conversationId)
@@ -187,33 +180,26 @@ export async function POST(request: Request) {
       }
     }
 
-    // Buscar histórico de mensagens para contexto
-    const { data: history } = await supabase
+    const { data: history } = await db
       .from('chatbot_messages')
       .select('role, content')
       .eq('conversation_id', conversationId)
       .order('created_at', { ascending: true })
       .limit(10)
 
-    // Salvar mensagem do usuário
-    const { error: userMsgError } = await supabase
+    const { error: userMsgError } = await db
       .from('chatbot_messages')
-      .insert({
-        conversation_id: conversationId,
-        role: 'user',
-        content: message
-      })
+      .insert({ conversation_id: conversationId, role: 'user', content: message })
 
     if (userMsgError) {
       console.error('Erro ao salvar mensagem do usuário:', userMsgError)
       return NextResponse.json({ error: 'Erro ao salvar mensagem' }, { status: 500 })
     }
 
-    // Consumir créditos
     if (!SKIP_CREDITS) {
-      const { error: creditError } = await supabase.rpc('consume_credits', {
+      const { error: creditError } = await db.rpc('consume_credits', {
         p_user_id: user.id,
-        p_generation_id: conversationId,
+        p_generation_id: null,
         p_amount: CREDIT_COST
       })
 
@@ -223,25 +209,18 @@ export async function POST(request: Request) {
       }
     }
 
-    // Preparar mensagens para o modelo
     const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
       { role: 'system', content: SYSTEM_INSTRUCTION }
     ]
 
-    // Adicionar histórico
     if (history && history.length > 0) {
       for (const msg of history) {
-        messages.push({
-          role: msg.role as 'user' | 'assistant',
-          content: msg.content
-        })
+        messages.push({ role: msg.role as 'user' | 'assistant', content: msg.content })
       }
     }
 
-    // Adicionar mensagem atual
     messages.push({ role: 'user', content: message })
 
-    // Gerar resposta com Groq
     const groq = getGroqClient()
     const completion = await groq.chat.completions.create({
       messages,
@@ -252,14 +231,9 @@ export async function POST(request: Request) {
 
     const assistantResponse = completion.choices[0]?.message?.content || 'Desculpe, não consegui gerar uma resposta.'
 
-    // Salvar resposta do assistente
-    const { data: assistantMsg, error: assistantMsgError } = await supabase
+    const { data: assistantMsg, error: assistantMsgError } = await db
       .from('chatbot_messages')
-      .insert({
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: assistantResponse
-      })
+      .insert({ conversation_id: conversationId, role: 'assistant', content: assistantResponse })
       .select('id')
       .single()
 
@@ -267,8 +241,7 @@ export async function POST(request: Request) {
       console.error('Erro ao salvar resposta do assistente:', assistantMsgError)
     }
 
-    // Atualizar conversa
-    await supabase
+    await db
       .from('chatbot_conversations')
       .update({
         message_count: (history?.length || 0) + 2,

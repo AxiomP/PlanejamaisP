@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { generateContent } from '@/lib/gemini'
 import { parseInstitutionalSettings } from '@/types/institutional-settings'
 import { buildInstitutionalPromptContext } from '@/lib/institutional-context'
@@ -20,8 +21,10 @@ export async function POST(request: Request) {
       )
     }
 
+    const db = createAdminClient()
+
     // Verificar se usuário existe na tabela users
-    const { data: dbUser, error: userCheckError } = await supabase
+    const { data: dbUser, error: userCheckError } = await db
       .from('users')
       .select('id, credits, institution_id')
       .eq('id', user.id)
@@ -48,7 +51,7 @@ export async function POST(request: Request) {
     // Buscar configurações institucionais se modo institucional
     let institutionalContext: string | null = null
     if (mode === 'institucional' && dbUser.institution_id) {
-      const { data: institution } = await supabase
+      const { data: institution } = await db
         .from('institutions')
         .select('settings')
         .eq('id', dbUser.institution_id)
@@ -94,7 +97,7 @@ export async function POST(request: Request) {
     }
 
     // Criar registro pendente
-    const { error: insertError } = await supabase.from('generations').insert({
+    const { error: insertError } = await db.from('generations').insert({
       id: generationId,
       user_id: user.id,
       tool_type: TOOL_TYPE,
@@ -114,14 +117,14 @@ export async function POST(request: Request) {
 
     // Consumir créditos ANTES de gerar (pular se SKIP_CREDITS=true)
     if (!SKIP_CREDITS) {
-      const { data: creditSuccess, error: creditError } = await supabase.rpc('consume_credits', {
+      const { data: creditSuccess, error: creditError } = await db.rpc('consume_credits', {
         p_user_id: user.id,
         p_generation_id: generationId,
         p_amount: CREDIT_COST
       })
 
       if (creditError || !creditSuccess) {
-        await supabase.from('generations')
+        await db.from('generations')
           .update({ status: 'failed', error_message: 'Erro ao consumir créditos' })
           .eq('id', generationId)
 
@@ -140,7 +143,7 @@ export async function POST(request: Request) {
       const processingTime = Date.now() - startTime
 
       // Salvar resultado
-      await supabase.from('generations')
+      await db.from('generations')
         .update({
           output_data: outputData,
           status: 'completed',
@@ -157,7 +160,7 @@ export async function POST(request: Request) {
     } catch (genError) {
       const errorMessage = genError instanceof Error ? genError.message : 'Erro desconhecido'
 
-      await supabase.from('generations')
+      await db.from('generations')
         .update({
           status: 'failed',
           error_message: errorMessage
