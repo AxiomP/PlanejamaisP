@@ -73,3 +73,5 @@ coverage/
 *.seed
 *.pid.lock
 SETUP_GUIDE.md
+.setup_guide.md
+Docs

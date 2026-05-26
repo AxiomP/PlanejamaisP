@@ -19,7 +19,6 @@
 - [Arquitetura e Decisões Técnicas](#-arquitetura-e-decisões-técnicas)
 - [Funcionalidades Implementadas](#-funcionalidades-implementadas)
 - [Execução Local](#-execução-local)
-- [Ambiente e Variáveis](#-ambiente-e-variáveis)
 - [Estrutura do Projeto](#-estrutura-do-projeto)
 - [Roadmap (próximos passos)](#-roadmap-próximos-passos)
 - [Autor e Contato](#-autor-e-contato)
@@ -90,7 +89,7 @@ O projeto foi concebido com arquitetura SaaS, incluindo:
 
 ### Passos
 
-
+```bash
 # 1. Clonar repositório
 git clone https://github.com/AxiomP/planejamais.git
 cd planejamais
@@ -109,7 +108,7 @@ cp .env.example .env.local
 
 # 5. Iniciar servidor de desenvolvimento
 npm run dev
-
+```
 
 Acesse `http://localhost:3000`.
 
@@ -124,6 +123,7 @@ Acesse `http://localhost:3000`.
 | `npm run type-check` | Checagem estática de tipos TypeScript |
 
 ---
+
 
 ## 📁 Estrutura do Projeto (resumida)
 
